@@ -34,7 +34,7 @@ class RtpPacket:
 		
 		# Get the payload from the argument
 		self.payload = payload
-		
+		return header
 	def decode(self, byteStream):
 		"""Decode the RTP packet."""
 		self.header = bytearray(byteStream[:HEADER_SIZE])
