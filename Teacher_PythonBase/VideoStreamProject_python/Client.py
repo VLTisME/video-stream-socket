@@ -232,41 +232,37 @@ class Client:
 			if self.sessionId == session:
 				if int(lines[0].split(' ')[1]) == 200: 
 					if self.requestSent == self.SETUP:
-						#-------------
-						# TO COMPLETE
-						#-------------
-						# Update RTSP state.
-						# self.state = ...
+						self.state = self.READY
 						
 						# Open RTP port.
-						self.openRtpPort() 
+						self.openRtpPort()
+
 					elif self.requestSent == self.PLAY:
-						# self.state = ...
-					elif self.requestSent == self.PAUSE:
-						# self.state = ...
+						self.state = self.PLAYING
 						
+
+					elif self.requestSent == self.PAUSE:
+						self.state = self.READY
 						# The play thread exits. A new thread is created on resume.
 						self.playEvent.set()
+
 					elif self.requestSent == self.TEARDOWN:
-						# self.state = ...
+						self.state = self.INIT
 						
 						# Flag the teardownAcked to close the socket.
 						self.teardownAcked = 1 
 	
 	def openRtpPort(self):
 		"""Open RTP socket binded to a specified port."""
-		#-------------
-		# TO COMPLETE
-		#-------------
+		address = ''
 		# Create a new datagram socket to receive RTP packets from the server
-		# self.rtpSocket = ...
-		
-		# Set the timeout value of the socket to 0.5sec
-		# ...
-		
+		self.rtpSocket = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+
 		try:
 			# Bind the socket to the address using the RTP port given by the client user
-			# ...
+			self.rtpSocket.bind((address,self.rtpPort))
+			# Set the timeout value of the socket to 0.5sec
+			self.rtpSocket.settimeout(0.5)
 		except:
 			tkMessageBox.showwarning('Unable to Bind', 'Unable to bind PORT=%d' %self.rtpPort)
 
