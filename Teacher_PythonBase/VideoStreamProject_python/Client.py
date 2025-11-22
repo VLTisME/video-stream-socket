@@ -37,11 +37,7 @@ class Client:
 		self.teardownAcked = 0
 		self.connectToServer()
 		self.frameNbr = 0
-		self.SETUP_STR = "SETUP"
-		self.PLAY_STR = "PLAY"
-		self.TEARDOWN_STR = "TEARDOWN"
-		self.PAUSE_STR = "PAUSE"
-  
+		
 	def createWidgets(self):
 		"""Build GUI."""
 		# Create Setup button
@@ -160,49 +156,49 @@ class Client:
 			self.rtspSeq += 1
 			
 			# Write the RTSP request to be sent.
-			request = "%s %s %s" % (self.SETUP_STR, self.fileName, self.RTSP_VER)
-			request += "\nCSeq: %d" % self.rtspSeq
-			request+="\nTransport: %s; client_port= %d" % (self.TRANSPORT,self.rtpPort)
+			request = "%s %s %s", (self.SETUP_STR, self.fileName, self.RTSP_VER)
+			request += "\nCSeq: %d", self.rtspSeq
+			request += "\nSession: %d", self.sessionId
 			
 			# Keep track of the sent request.
-			self.requestSent = self.SETUP
+			self.requestSent = self.SETUP_STR
 		
 		# Play request
 		elif requestCode == self.PLAY and self.state == self.READY:
 			self.rtspSeq += 1
    
-			request = "%s %s %s" % (self.PLAY_STR, self.fileName, self.RTSP_VER)
-			request += "\nCSeq: %d" % self.rtspSeq
-			request += "\nSession: %d" % self.sessionId
+			request = "%s %s %s", (self.PLAY_STR, self.fileName, self.RTSP_VER)
+			request += "\nCSeq: %d", self.rtspSeq
+			request += "\nSession: %d", self.sessionId
    
-			self.requestSent = self.PLAY
+			self.requestSent = self.PLAY_STR
 			
 		
 		# Pause request
 		elif requestCode == self.PAUSE and self.state == self.PLAYING:
 			self.rtspSeq += 1
    
-			request = "%s %s %s" % (self.PAUSE_STR, self.fileName, self.RTSP_VER)
-			request += "\nCSeq: %d" % self.rtspSeq
-			request += "\nSession: %d" % self.sessionId
+			request = "%s %s %s", (self.PAUSE_STR, self.fileName, self.RTSP_VER)
+			request += "\nCSeq: %d", self.rtspSeq
+			request += "\nSession: %d", self.sessionId
    
-			self.requestSent = self.PAUSE
+			self.requestSent = self.PAUSE_STR
 			
 		# Teardown request
 		elif requestCode == self.TEARDOWN and not self.state == self.INIT:
 			self.rtspSeq += 1
    
-			request = "%s %s %s" % (self.TEARDOWN_STR, self.fileName, self.RTSP_VER)
-			request += "\nCSeq: %d" % self.rtspSeq
-			request += "\nSession: %d" % self.sessionId
+			request = "%s %s %s", (self.TEARDOWN_STR, self.fileName, self.RTSP_VER)
+			request += "\nCSeq: %d", self.rtspSeq
+			request += "\nSession: %d", self.sessionId
    
-			self.requestSent = self.TEARDOWN
+			self.requestSent = self.TEARDOWN_STR
 		else:
 			return
 		
 		# Send the RTSP request using rtspSocket.
 		# ...
-		self.rtspSocket.send(request.encode())
+		self.sendRtspRequest(request)
 		
 		print('\nData sent:\n' + request)
 	
