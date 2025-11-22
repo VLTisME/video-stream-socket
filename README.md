@@ -2,5 +2,5 @@
 
 ### Members
 - Đặng Bùi Thế Bảo.
-- Huỳnh Minh Thuận
+- Huỳnh Minh Thuận.
 - Võ Lân Tuấn.
