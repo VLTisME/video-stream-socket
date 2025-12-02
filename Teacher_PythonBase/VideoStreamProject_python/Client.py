@@ -7,6 +7,7 @@ from RtpPacket import RtpPacket
 
 CACHE_FILE_NAME = "cache-"
 CACHE_FILE_EXT = ".jpg"
+CLOCK_TICK = 900000
 
 class Client:
 	INIT = 0
@@ -31,6 +32,8 @@ class Client:
 		self.serverPort = int(serverport)
 		self.rtpPort = int(rtpport)
 		self.fileName = filename
+		self.buffer = {} #key: timestamp, value: [fragment1, fragment2,...]
+		self.queueRender = []
 		self.rtspSeq = 0
 		self.sessionId = 0
 		self.requestSent = -1
@@ -50,6 +53,7 @@ class Client:
 		self.setup["command"] = self.setupMovie
 		self.setup.grid(row=1, column=0, padx=2, pady=2)
 		
+
 		# Create Play button		
 		self.start = Button(self.master, width=20, padx=3, pady=3)
 		self.start["text"] = "Play"
