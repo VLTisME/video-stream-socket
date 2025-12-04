@@ -1,9 +1,11 @@
 from tkinter import *
+import tkinter.messagebox as tkMessageBox
 import tkinter.messagebox
 from PIL import Image, ImageTk
 import socket, threading, sys, traceback, os
-
+import queue
 from RtpPacket import RtpPacket
+import time
 
 CACHE_FILE_NAME = "cache-"
 CACHE_FILE_EXT = ".jpg"
@@ -19,6 +21,7 @@ class Client:
 	PLAY = 1
 	PAUSE = 2
 	TEARDOWN = 3
+	SEEK = 4
  
 	RTSP_VER = "RTSP/1.0"
 	TRANSPORT = "RTP/UDP"
@@ -38,12 +41,19 @@ class Client:
 		self.sessionId = 0
 		self.requestSent = -1
 		self.teardownAcked = 0
+		self.totalDuration = 0
+		self.start_time = 0.0
 		self.connectToServer()
 		self.frameNbr = 0
+		self.queue_frame = queue.Queue()
+		self.is_dragging = False
+		self.FPS = 30
+		self.delay = 1.0/self.FPS
 		self.PLAY_STR = "PLAY"
 		self.PAUSE_STR = "PAUSE"
 		self.TEARDOWN_STR = "TEARDOWN"
 		self.SETUP_STR = "SETUP"
+		self.SEEK_STR = "SEEK"
 		
 	def createWidgets(self):
 		"""Build GUI."""
@@ -72,9 +82,19 @@ class Client:
 		self.teardown["command"] =  self.exitClient
 		self.teardown.grid(row=1, column=3, padx=2, pady=2)
 		
+		#create Slider
+		self.timeline_w = 400  # Chiều dài timeline (pixel)
+		self.timeline_h = 20   # Chiều cao timeline
+		self.canvas = Canvas(self.master, width=self.timeline_w, height=self.timeline_h, bg="#444444", highlightthickness=0)
+		self.canvas.grid(row=2, column=0, columnspan=4, padx=10, pady=10)
+		self.buffer_rect = self.canvas.create_rectangle(0, 0, 0, self.timeline_h, fill="#888888", width=0)
+		self.progress_rect = self.canvas.create_rectangle(0, 0, 0, self.timeline_h, fill="#FF0000", width=0)
+		self.canvas.bind("<Button-1>", self.on_timeline_click)
+		self.canvas.bind("<B1-Motion>", self.on_timeline_drag)
+		self.canvas.bind("<ButtonRelease-1>", self.on_timeline_release)
 		# Create a label to display the movie
 		self.label = Label(self.master, height=19)
-		self.label.grid(row=0, column=0, columnspan=4, sticky=W+E+N+S, padx=5, pady=5) 
+		self.label.grid(row=0, column=0, columnspan=4, sticky=W+E+N+S, padx=5, pady=5)
 	
 	def setupMovie(self):
 		"""Setup button handler."""
@@ -99,6 +119,7 @@ class Client:
 			threading.Thread(target=self.listenRtp).start()
 			self.playEvent = threading.Event()
 			self.playEvent.clear()
+			threading.Thread(target=self.playvideoThread).start()
 			self.sendRtspRequest(self.PLAY)
 	
 	def listenRtp(self):		
@@ -110,12 +131,15 @@ class Client:
 					rtpPacket = RtpPacket()
 					rtpPacket.decode(data)
 					
-					currFrameNbr = rtpPacket.seqNum()
-					print("Current Seq Num: " + str(currFrameNbr))
+					# currFrameNbr = rtpPacket.seqNum()
+					# print("Current Seq Num: " + str(currFrameNbr))
 										
-					if currFrameNbr > self.frameNbr: # Discard the late packet
-						self.frameNbr = currFrameNbr
-						self.updateMovie(self.writeFrame(rtpPacket.getPayload()))
+					# if currFrameNbr > self.frameNbr: # Discard the late packet
+					# 	self.frameNbr = currFrameNbr
+					# 	self.updateMovie(self.writeFrame(rtpPacket.getPayload()))
+					if self.queue_frame.full():
+						pass
+					self.queue_frame.put(rtpPacket)
 			except:
 				# Stop listening upon requesting PAUSE or TEARDOWN
 				if self.playEvent.isSet(): 
@@ -142,7 +166,18 @@ class Client:
 		photo = ImageTk.PhotoImage(Image.open(imageFile))
 		self.label.configure(image = photo, height=288) 
 		self.label.image = photo
-		
+
+	def playvideoThread(self):
+		while not self.playEvent.is_set():
+			if not self.queue_frame.empty():
+				rtpPacket = self.queue_frame.get()
+				self.updateMovie(self.writeFrame(rtpPacket.getPayload()))
+				current_time = rtpPacket.seqNum() / float(self.FPS)
+				self.draw_timeline(current_time)
+				
+				time.sleep(self.delay)
+			else:
+				time.sleep(0.01)
 	def connectToServer(self):
 		"""Connect to the Server. Start a new RTSP/TCP session."""
 		self.rtspSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -151,7 +186,7 @@ class Client:
 		except:
 			tkMessageBox.showwarning('Connection Failed', 'Connection to \'%s\' failed.' %self.serverAddr)
 	
-	def sendRtspRequest(self, requestCode):
+	def sendRtspRequest(self, requestCode, start_time=-1.0):
 		"""Send RTSP request to the server."""	
 		#-------------
 		# TO COMPLETE
@@ -172,13 +207,14 @@ class Client:
 			self.requestSent = self.SETUP
 		
 		# Play request
-		elif requestCode == self.PLAY and self.state == self.READY:
+		elif requestCode == self.PLAY and (self.state == self.READY or self.state == self.PLAYING):
 			self.rtspSeq += 1
    
 			request = "%s %s %s" % (self.PLAY_STR, self.fileName, self.RTSP_VER)
 			request += "\nCSeq: %d" % self.rtspSeq
 			request += "\nSession: %d" % self.sessionId
-   
+			if start_time >= 0:
+				request += "\nRange: npt=%.2f-" % start_time
 			self.requestSent = self.PLAY
 			
 		
@@ -201,6 +237,14 @@ class Client:
 			request += "\nSession: %d" % self.sessionId
    
 			self.requestSent = self.TEARDOWN
+		elif requestCode == self.SEEK:
+			self.rtspSeq += 1
+
+			request = "%s %s %s" % (self.SEEK_STR, self.fileName, self.RTSP_VER)
+			request += "\nCSeq: %d" % self.rtspSeq
+			request += "\nSession: %d" % self.sessionId
+
+			self.requestSent = self.SEEK
 		else:
 			return
 		
@@ -241,7 +285,14 @@ class Client:
 				if int(lines[0].split(' ')[1]) == 200: 
 					if self.requestSent == self.SETUP:
 						self.state = self.READY
-						
+						for line in lines:
+							if "Range: npt=" in line:
+								try:
+									self.totalDuration = float(line.split('-')[1])
+								except: pass
+						total_frames = int(self.totalDuration * self.FPS)
+						q_size = 200
+						self.queue_frame = queue.Queue(maxsize=q_size)
 						# Open RTP port.
 						self.openRtpPort()
 
@@ -281,3 +332,65 @@ class Client:
 			self.exitClient()
 		else: # When the user presses cancel, resume playing.
 			self.playMovie()
+
+	def on_timeline_click(self, event):
+		self.is_dragging = True
+		self.on_timeline_drag(event)
+
+	def on_timeline_drag(self, event):
+		if self.totalDuration == 0: return
+		cur_x = event.x
+		if cur_x < 0: cur_x = 0
+		if cur_x > self.timeline_w: cur_x = self.timeline_w
+		self.canvas.coords(self.progress_rect, 0, 0, cur_x, self.timeline_h)
+
+	def on_timeline_release(self, event):
+		if self.totalDuration == 0: return
+		
+		# 1. Tính toán vị trí mới
+		click_x = event.x
+		if click_x < 0: click_x = 0
+		if click_x > self.timeline_w: click_x = self.timeline_w
+		
+		ratio = click_x / float(self.timeline_w)
+		target_time = ratio * self.totalDuration
+		
+		print(f"Seeking to: {target_time}")
+		
+		# 2. QUAN TRỌNG NHẤT: Xóa sạch bộ đệm cũ
+		# Nếu không xóa, nó sẽ chiếu nốt 6 giây cũ rồi mới tua -> Gây cảm giác lag
+		with self.queue_frame.mutex:
+			self.queue_frame.queue.clear()
+			
+		# 3. Gửi lệnh tua
+		self.sendRtspRequest(self.PLAY, start_time=target_time)
+		
+		# 4. Tắt cờ kéo chuột
+		self.is_dragging = False
+
+	def draw_timeline(self, current_time):
+		if self.is_dragging: return
+		if self.totalDuration > 0:
+			# 1. VẼ THANH XÁM (BUFFER) - Phải vẽ trước hoặc vẽ dài hơn
+			# Buffer Bar = Current Time + Buffered Time
+			
+			# Tính thời gian đang nằm trong Queue
+			buffer_seconds = self.queue_frame.qsize() / float(self.FPS)
+			
+			# Điểm cuối của thanh xám
+			buffer_end_time = current_time + buffer_seconds
+			
+			buff_ratio = buffer_end_time / self.totalDuration
+			buff_width = buff_ratio * self.timeline_w
+			
+			# Giới hạn max width
+			if buff_width > self.timeline_w: buff_width = self.timeline_w
+			
+			# Cập nhật tọa độ
+			self.canvas.coords(self.buffer_rect, 0, 0, buff_width, self.timeline_h)
+
+			# 2. VẼ THANH ĐỎ (PROGRESS) - Vẽ đè lên trên thanh xám
+			prog_ratio = current_time / self.totalDuration
+			prog_width = prog_ratio * self.timeline_w
+			
+			self.canvas.coords(self.progress_rect, 0, 0, prog_width, self.timeline_h)
