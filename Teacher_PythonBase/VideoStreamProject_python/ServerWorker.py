@@ -3,6 +3,7 @@ import sys, traceback, threading, socket
 
 from VideoStream import VideoStream
 from RtpPacket import RtpPacket
+from RtpPacket import JpegHeader
 
 CLOCK_TICK = 900000
 class ServerWorker:
@@ -110,8 +111,9 @@ class ServerWorker:
 			
 	def sendRtp(self):
 		"""Send RTP packets over UDP."""
-
+		fps = 0.003
 		while True:
+			self.clientInfo['event'].wait(fps)
 			# Stop sending if request is PAUSE or TEARDOWN
 			if self.clientInfo['event'].isSet(): 
 				break 
@@ -120,7 +122,8 @@ class ServerWorker:
 			if frame:
 				PAYLOADSIZE = 1400
 				timestamp = self.clientInfo['videoStream'].getTimestamp()
-				nFragments = len(frame)/PAYLOADSIZE + 1
+				size = len(frame)
+				nFragments = size/PAYLOADSIZE + 1
 				try:
 					address = self.clientInfo['rtspSocket'][1][0]
 					port = int(self.clientInfo['rtpPort'])
@@ -128,8 +131,16 @@ class ServerWorker:
 					# Sending fragments
 					for i in range(nFragments):
 						offset = i*PAYLOADSIZE
-						chunk = frame[offset:offset + PAYLOADSIZE]
-						self.clientInfo['rtpSocket'].sendto(self.makeRtp(chunk, i+1, timestamp),(address,port))
+						end = PAYLOADSIZE if offset + PAYLOADSIZE <= size else size
+						chunk = frame[offset:end]
+						packet = JpegHeader()
+						typeSpecific = 0
+						type_ = 0
+						q = 255
+						width = 0
+						height = 0
+						packet.encode(typeSpecific,offset,type_,q,width,height,chunk)
+						self.clientInfo['rtpSocket'].sendto(self.makeRtp(packet, i+1, timestamp),(address,port))
 						
 				except:
 					print("Connection Error")

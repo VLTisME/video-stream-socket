@@ -6,6 +6,7 @@ import io
 from queue import Queue
 
 from RtpPacket import RtpPacket
+from RtpPacket import JpegHeader
 
 CACHE_FILE_NAME = "cache-"
 CACHE_FILE_EXT = ".jpg"
