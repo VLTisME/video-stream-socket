@@ -18,9 +18,9 @@ class VideoStream:
 			self.frameNum += 1
 		return data
 		
-	def frameNbr(self):
+	def getTimestamp(self):
 		"""Get frame number."""
-		return self.frameNum
+		return self.timestamp
 	
 	def seekFrame(self, timestamp):
 		

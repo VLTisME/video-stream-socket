@@ -110,28 +110,31 @@ class ServerWorker:
 			
 	def sendRtp(self):
 		"""Send RTP packets over UDP."""
+
 		while True:
-			self.clientInfo['event'].wait(0.05) 
-			
 			# Stop sending if request is PAUSE or TEARDOWN
 			if self.clientInfo['event'].isSet(): 
 				break 
 				
-			data = self.clientInfo['videoStream'].nextFrame()
-			if data: 
-				frameNumber = self.clientInfo['videoStream'].frameNbr()
+			frame = self.clientInfo['videoStream'].nextFrame()
+			if frame:
+				PAYLOADSIZE = 1400
+				timestamp = self.clientInfo['videoStream'].getTimestamp()
+				nFragments = len(frame)/PAYLOADSIZE + 1
 				try:
 					address = self.clientInfo['rtspSocket'][1][0]
 					port = int(self.clientInfo['rtpPort'])
 					
-					self.clientInfo['rtpSocket'].sendto(self.makeRtp(data, frameNumber),(address,port))
+					# Sending fragments
+					for i in range(nFragments):
+						offset = i*PAYLOADSIZE
+						chunk = frame[offset:offset + PAYLOADSIZE]
+						self.clientInfo['rtpSocket'].sendto(self.makeRtp(chunk, i+1, timestamp),(address,port))
+						
 				except:
 					print("Connection Error")
-					#print('-'*60)
-					#traceback.print_exc(file=sys.stdout)
-					#print('-'*60)
 
-	def makeRtp(self, payload, frameNbr):
+	def makeRtp(self, payload, seqNum, timestamp):
 		"""RTP-packetize the video data."""
 		version = 2
 		padding = 0
@@ -139,12 +142,13 @@ class ServerWorker:
 		cc = 0
 		marker = 0
 		pt = 26 # MJPEG type
-		seqnum = frameNbr
+		seqnum = seqNum
 		ssrc = 0 
+		ts = timestamp
 		
 		rtpPacket = RtpPacket()
 		
-		rtpPacket.encode(version, padding, extension, cc, seqnum, marker, pt, ssrc, payload)
+		rtpPacket.encode(version, padding, extension, cc, marker, pt, seqnum, ts, ssrc, payload)
 		
 		return rtpPacket.getPacket()
 		
