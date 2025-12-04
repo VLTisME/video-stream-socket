@@ -3,14 +3,22 @@ import tkinter.messagebox as tkMessageBox
 import tkinter.messagebox
 from PIL import Image, ImageTk
 import socket, threading, sys, traceback, os
+
+import io
+from queue import Queue
 import queue
-from RtpPacket import RtpPacket
 import time
+from RtpPacket import RtpPacket
+from RtpPacket import JpegHeader
 
 CACHE_FILE_NAME = "cache-"
 CACHE_FILE_EXT = ".jpg"
 CLOCK_TICK = 900000
 
+class Frame:
+	def __init__(self, timestamp, payload):
+		self.timestamp = timestamp
+		self.payload = payload
 class Client:
 	INIT = 0
 	READY = 1
@@ -35,8 +43,11 @@ class Client:
 		self.serverPort = int(serverport)
 		self.rtpPort = int(rtpport)
 		self.fileName = filename
-		self.buffer = {} #key: timestamp, value: [fragment1, fragment2,...]
-		self.queueRender = []
+
+		self.buffer = {} #key: timestamp, value: {seqNum1: payload1, ...}
+		self.queueRender = Queue()
+		self.queueWork = Queue()
+
 		self.rtspSeq = 0
 		self.sessionId = 0
 		self.requestSent = -1
@@ -117,53 +128,97 @@ class Client:
 		if self.state == self.READY:
 			# Create a new thread to listen for RTP packets
 			threading.Thread(target=self.listenRtp).start()
+			threading.Thread(target=self.processPacket).start()
 			self.playEvent = threading.Event()
 			self.playEvent.clear()
-			threading.Thread(target=self.playvideoThread).start()
+
+			self.renderLoop()
 			self.sendRtspRequest(self.PLAY)
 	
+	def renderLoop(self):
+		if(self.playEvent.is_set() or self.teardownAcked == 1):
+			return
+		try:
+			ms = 30
+			frame = self.queueRender.get_nowait()
+			self.updateMovie(frame)
+		except:
+			pass
+		self.master.after(ms,self.renderLoop())
+
 	def listenRtp(self):		
 		"""Listen for RTP packets."""
 		while True:
 			try:
-				data = self.rtpSocket.recv(20480)
+				data = self.rtpSocket.recv(20480)	
 				if data:
 					rtpPacket = RtpPacket()
 					rtpPacket.decode(data)
-					
-					# currFrameNbr = rtpPacket.seqNum()
-					# print("Current Seq Num: " + str(currFrameNbr))
-										
-					# if currFrameNbr > self.frameNbr: # Discard the late packet
-					# 	self.frameNbr = currFrameNbr
-					# 	self.updateMovie(self.writeFrame(rtpPacket.getPayload()))
-					if self.queue_frame.full():
-						pass
-					self.queue_frame.put(rtpPacket)
+					currChunk = rtpPacket.seqNum()
+					currTs = rtpPacket.timestamp()
+					print("Current Timestamp: " +str(currTs)+": "+ str(currChunk))
+					self.queueWork.put(rtpPacket)
+        
 			except:
-				# Stop listening upon requesting PAUSE or TEARDOWN
-				if self.playEvent.isSet(): 
-					break
-				
-				# Upon receiving ACK for TEARDOWN request,
-				# close the RTP socket
-				if self.teardownAcked == 1:
-					self.rtpSocket.shutdown(socket.SHUT_RDWR)
-					self.rtpSocket.close()
-					break
+				pass
+
+			# Stop listening upon requesting PAUSE or TEARDOWN
+			if self.playEvent.isSet(): 
+				break
+			
+			# Upon receiving ACK for TEARDOWN request,
+			# close the RTP socket
+			if self.teardownAcked == 1:
+				self.rtpSocket.shutdown(socket.SHUT_RDWR)
+				self.rtpSocket.close()
+				break
 					
-	def writeFrame(self, data):
-		"""Write the received frame to a temp image file. Return the image file."""
-		cachename = CACHE_FILE_NAME + str(self.sessionId) + CACHE_FILE_EXT
-		file = open(cachename, "wb")
-		file.write(data)
-		file.close()
-		
-		return cachename
-	
-	def updateMovie(self, imageFile):
+	def processPacket(self):
+		while True:
+			try:
+				packet = self.queueWork.get(timeout=0.5)
+				ts = packet.timestamp()
+				seqNum = packet.seqNum()
+				if seqNum not in self.buffer[ts]:
+					fragment = packet.getPayload()
+					fragment.decode()
+					self.buffer[ts][seqNum] = fragment
+				if packet.marker() == 1:
+					if self.isComplete(ts,seqNumEnd=seqNum):
+						self.reassemble(ts,seqNumEnd= seqNum)
+					else: 
+						del self.buffer[ts]
+			except:
+				continue
+			if self.playEvent.isSet(): 
+				break
+			
+			if self.teardownAcked == 1:
+				break
+
+	def isComplete(self, timestamp, seqNumEnd):
+		for seqNum in range(seqNumEnd,0,-1):
+			if seqNum not in self.buffer[timestamp]:
+				return False
+			else:
+				if self.buffer[timestamp][seqNum].offset() == 0:
+					break
+		return True
+			
+	def reassemble(self, timestamp,seqNumEnd):
+		fragments = self.buffer[timestamp]
+		frame = bytearray(fragments[seqNumEnd].offset() + len(fragments[seqNumEnd].getPayload()))
+		for seqNum in fragments:
+			offset = fragments[seqNum].offset()
+			payload = fragments[seqNum].getPayload()
+			frame[offset:offset+len(payload)] = payload
+
+		self.queueRender.append(frame)
+
+	def updateMovie(self, data):
 		"""Update the image file as video frame in the GUI."""
-		photo = ImageTk.PhotoImage(Image.open(imageFile))
+		image = io.BytesIO(data)
+		photo = ImageTk.PhotoImage(Image.open(image))
 		self.label.configure(image = photo, height=288) 
 		self.label.image = photo
 
@@ -332,6 +387,13 @@ class Client:
 			self.exitClient()
 		else: # When the user presses cancel, resume playing.
 			self.playMovie()
+
+	def queueClear(queue):
+		while True:
+			try:
+				queue.get_nowait()
+			except:
+				return
 
 	def on_timeline_click(self, event):
 		self.is_dragging = True
