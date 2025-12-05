@@ -11,8 +11,6 @@ import time
 from RtpPacket import RtpPacket
 from RtpPacket import JpegHeader
 
-CACHE_FILE_NAME = "cache-"
-CACHE_FILE_EXT = ".jpg"
 CLOCK_TICK = 900000
 
 class Frame:
@@ -48,6 +46,7 @@ class Client:
 		self.queueRender = Queue()
 		self.queueWork = Queue()
 
+		self.movieSize = 0
 		self.rtspSeq = 0
 		self.sessionId = 0
 		self.requestSent = -1
@@ -55,8 +54,7 @@ class Client:
 		self.totalDuration = 0
 		self.start_time = 0.0
 		self.connectToServer()
-		self.frameNbr = 0
-		self.queue_frame = queue.Queue()
+
 		self.is_dragging = False
 		self.FPS = 30
 		self.delay = 1.0/self.FPS
@@ -65,6 +63,8 @@ class Client:
 		self.TEARDOWN_STR = "TEARDOWN"
 		self.SETUP_STR = "SETUP"
 		self.SEEK_STR = "SEEK"
+
+		self.i =0
 		
 	def createWidgets(self):
 		"""Build GUI."""
@@ -116,7 +116,6 @@ class Client:
 		"""Teardown button handler."""
 		self.sendRtspRequest(self.TEARDOWN)		
 		self.master.destroy() # Close the gui window
-		os.remove(CACHE_FILE_NAME + str(self.sessionId) + CACHE_FILE_EXT) # Delete the cache image from video
 
 	def pauseMovie(self):
 		"""Pause button handler."""
@@ -136,15 +135,17 @@ class Client:
 			self.sendRtspRequest(self.PLAY)
 	
 	def renderLoop(self):
-		if(self.playEvent.is_set() or self.teardownAcked == 1):
+		if self.playEvent.is_set() or self.teardownAcked == 1:
 			return
 		try:
 			ms = 30
 			frame = self.queueRender.get_nowait()
+			currentTime = len(frame)/self.movieSize
+			self.draw_timeline(currentTime)
 			self.updateMovie(frame)
 		except:
 			pass
-		self.master.after(ms,self.renderLoop())
+		self.master.after(ms,self.renderLoop)
 
 	def listenRtp(self):		
 		"""Listen for RTP packets."""
@@ -156,7 +157,7 @@ class Client:
 					rtpPacket.decode(data)
 					currChunk = rtpPacket.seqNum()
 					currTs = rtpPacket.timestamp()
-					print("Current Timestamp: " +str(currTs)+": "+ str(currChunk))
+					#print("Current Timestamp: " +str(currTs)+": "+ str(currChunk))
 					self.queueWork.put(rtpPacket)
         
 			except:
@@ -179,10 +180,16 @@ class Client:
 				packet = self.queueWork.get(timeout=0.5)
 				ts = packet.timestamp()
 				seqNum = packet.seqNum()
+				
+				if ts not in self.buffer:
+					self.buffer[ts] = {}
+				
 				if seqNum not in self.buffer[ts]:
-					fragment = packet.getPayload()
-					fragment.decode()
+					payload = packet.getPayload()
+					fragment = JpegHeader()
+					fragment.decode(payload)
 					self.buffer[ts][seqNum] = fragment
+
 				if packet.marker() == 1:
 					if self.isComplete(ts,seqNumEnd=seqNum):
 						self.reassemble(ts,seqNumEnd= seqNum)
@@ -208,12 +215,13 @@ class Client:
 	def reassemble(self, timestamp,seqNumEnd):
 		fragments = self.buffer[timestamp]
 		frame = bytearray(fragments[seqNumEnd].offset() + len(fragments[seqNumEnd].getPayload()))
+
 		for seqNum in fragments:
 			offset = fragments[seqNum].offset()
 			payload = fragments[seqNum].getPayload()
 			frame[offset:offset+len(payload)] = payload
-
-		self.queueRender.append(frame)
+		
+		self.queueRender.put(frame)
 
 	def updateMovie(self, data):
 		"""Update the image file as video frame in the GUI."""
@@ -222,17 +230,6 @@ class Client:
 		self.label.configure(image = photo, height=288) 
 		self.label.image = photo
 
-	def playvideoThread(self):
-		while not self.playEvent.is_set():
-			if not self.queue_frame.empty():
-				rtpPacket = self.queue_frame.get()
-				self.updateMovie(self.writeFrame(rtpPacket.getPayload()))
-				current_time = rtpPacket.seqNum() / float(self.FPS)
-				self.draw_timeline(current_time)
-				
-				time.sleep(self.delay)
-			else:
-				time.sleep(0.01)
 	def connectToServer(self):
 		"""Connect to the Server. Start a new RTSP/TCP session."""
 		self.rtspSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -338,16 +335,12 @@ class Client:
 			# Process only if the session ID is the same
 			if self.sessionId == session:
 				if int(lines[0].split(' ')[1]) == 200: 
+
 					if self.requestSent == self.SETUP:
 						self.state = self.READY
-						for line in lines:
-							if "Range: npt=" in line:
-								try:
-									self.totalDuration = float(line.split('-')[1])
-								except: pass
-						total_frames = int(self.totalDuration * self.FPS)
-						q_size = 200
-						self.queue_frame = queue.Queue(maxsize=q_size)
+						
+						if len(lines) >= 4:
+							self.movieSize = (float)(lines[3].split(' ')[1])
 						# Open RTP port.
 						self.openRtpPort()
 
@@ -437,7 +430,7 @@ class Client:
 			# Buffer Bar = Current Time + Buffered Time
 			
 			# Tính thời gian đang nằm trong Queue
-			buffer_seconds = self.queue_frame.qsize() / float(self.FPS)
+			buffer_seconds = self.queueRender.qsize() / float(self.FPS)
 			
 			# Điểm cuối của thanh xám
 			buffer_end_time = current_time + buffer_seconds
