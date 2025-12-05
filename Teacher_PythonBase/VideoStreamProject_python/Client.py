@@ -28,6 +28,7 @@ class Client:
 	PAUSE = 2
 	TEARDOWN = 3
 	SEEK = 4
+	SET_PARAMETER = 5
  
 	RTSP_VER = "RTSP/1.0"
 	TRANSPORT = "RTP/UDP"
@@ -45,6 +46,7 @@ class Client:
 		self.buffer = {} #key: timestamp, value: {seqNum1: payload1, ...}
 		self.queueRender = Queue()
 		self.queueWork = Queue()
+		self.current_render_timestamp = 0  # Track the timestamp of the frame being rendered
 
 		self.movieSize = 0
 		self.rtspSeq = 0
@@ -63,6 +65,9 @@ class Client:
 		self.TEARDOWN_STR = "TEARDOWN"
 		self.SETUP_STR = "SETUP"
 		self.SEEK_STR = "SEEK"
+		self.SET_PARAMETER_STR = "SET_PARAMETER"
+		self.currentQuality = "720p"
+		self.last_rtp_timestamp = 0
 
 		self.i =0
 		
@@ -92,7 +97,14 @@ class Client:
 		self.teardown["text"] = "Teardown"
 		self.teardown["command"] =  self.exitClient
 		self.teardown.grid(row=1, column=3, padx=2, pady=2)
-		
+
+		self.qualityVar = StringVar(self.master)
+		self.qualityVar.set("720p") 
+		qualities = ["720p", "1080p"]
+		self.qualityMenu = OptionMenu(self.master, self.qualityVar, *qualities, command=self.changeQuality)
+		self.qualityMenu.config(width=10)
+		self.qualityMenu.grid(row=1, column=4, padx=2, pady=2)		
+  
 		#create Slider
 		self.timeline_w = 400  # Chiều dài timeline (pixel)
 		self.timeline_h = 20   # Chiều cao timeline
@@ -106,6 +118,22 @@ class Client:
 		# Create a label to display the movie
 		self.label = Label(self.master, height=19)
 		self.label.grid(row=0, column=0, columnspan=4, sticky=W+E+N+S, padx=5, pady=5)
+
+	def changeQuality(self, value):
+		if self.state in [self.READY, self.PLAYING]:
+			if value == self.currentQuality: return
+			self.currentQuality = value
+			
+			# Clear all buffers to prevent mixing old/new quality frames
+			with self.queueRender.mutex:
+				self.queueRender.queue.clear()
+			with self.queueWork.mutex:
+				self.queueWork.queue.clear()
+			self.buffer.clear()
+			
+			# Use current rendering timestamp to maintain playback position
+			switch_timestamp = self.current_render_timestamp if self.current_render_timestamp > 0 else self.last_rtp_timestamp
+			self.sendRtspRequest(self.SET_PARAMETER, timestamp=switch_timestamp)
 	
 	def setupMovie(self):
 		"""Setup button handler."""
@@ -139,12 +167,15 @@ class Client:
 			return
 		try:
 			ms = 30
-			frame = self.queueRender.get_nowait()
+			timestamp, frame = self.queueRender.get_nowait()
+			self.current_render_timestamp = timestamp
 			currentTime = len(frame)/self.movieSize
 			self.draw_timeline(currentTime)
 			self.updateMovie(frame)
-		except:
+		except queue.Empty:
 			pass
+		except Exception as e:
+			print(f"Error rendering frame: {e}")
 		self.master.after(ms,self.renderLoop)
 
 	def listenRtp(self):		
@@ -155,9 +186,7 @@ class Client:
 				if data:
 					rtpPacket = RtpPacket()
 					rtpPacket.decode(data)
-					currChunk = rtpPacket.seqNum()
-					currTs = rtpPacket.timestamp()
-					#print("Current Timestamp: " +str(currTs)+": "+ str(currChunk))
+					self.last_rtp_timestamp = rtpPacket.timestamp()
 					self.queueWork.put(rtpPacket)
         
 			except:
@@ -221,7 +250,8 @@ class Client:
 			payload = fragments[seqNum].getPayload()
 			frame[offset:offset+len(payload)] = payload
 		
-		self.queueRender.put(frame)
+		# Store frame with its timestamp
+		self.queueRender.put((timestamp, bytes(frame)))
 
 	def updateMovie(self, data):
 		"""Update the image file as video frame in the GUI."""
@@ -238,7 +268,7 @@ class Client:
 		except:
 			tkMessageBox.showwarning('Connection Failed', 'Connection to \'%s\' failed.' %self.serverAddr)
 	
-	def sendRtspRequest(self, requestCode, start_time=-1.0):
+	def sendRtspRequest(self, requestCode, start_time=-1.0, timestamp=0):
 		"""Send RTSP request to the server."""	
 		#-------------
 		# TO COMPLETE
@@ -297,6 +327,17 @@ class Client:
 			request += "\nSession: %d" % self.sessionId
 
 			self.requestSent = self.SEEK
+		# [THÊM] Đoạn xử lý SET_PARAMETER
+		elif requestCode == self.SET_PARAMETER:
+			self.rtspSeq += 1
+			# Lưu ý: Chỗ này sửa lại format string cho đúng
+			request = "%s rtsp://%s/%s %s" % (self.SET_PARAMETER_STR, self.serverAddr, self.fileName, self.RTSP_VER)
+			request += "\nCSeq: %d" % self.rtspSeq
+			request += "\nSession: %d" % self.sessionId
+			# Dòng quan trọng gửi timestamp
+			request += "\nQuality: %s, timestamp=%d" % (self.currentQuality, int(timestamp))
+			
+			self.requestSent = self.SET_PARAMETER
 		else:
 			return
 		
