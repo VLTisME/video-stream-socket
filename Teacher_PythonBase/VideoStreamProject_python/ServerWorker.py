@@ -166,7 +166,8 @@ class ServerWorker:
 			
 			# 2. Chọn file
 			newFileName = ""
-			if qualityVal == "720p": newFileName = "movie.Mjpeg"
+			if qualityVal == "480p": newFileName = "movie_480p.Mjpeg"
+			elif qualityVal == "720p": newFileName = "movie_720p.Mjpeg"
 			elif qualityVal == "1080p": newFileName = "movie_1080p.Mjpeg"
 			
 			if newFileName != "":
