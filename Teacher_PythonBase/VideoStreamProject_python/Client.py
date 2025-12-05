@@ -48,7 +48,7 @@ class Client:
 		self.queueWork = Queue()
 		self.current_render_timestamp = 0  # Track the timestamp of the frame being rendered
 
-		self.movieSize = 0
+		self.movie_frame = 0
 		self.rtspSeq = 0
 		self.sessionId = 0
 		self.requestSent = -1
@@ -169,7 +169,8 @@ class Client:
 			ms = 30
 			timestamp, frame = self.queueRender.get_nowait()
 			self.current_render_timestamp = timestamp
-			currentTime = len(frame)/self.movieSize
+			self.movie_frame += 1
+			currentTime = self.movie_frame / self.FPS
 			self.draw_timeline(currentTime)
 			self.updateMovie(frame)
 		except queue.Empty:
@@ -381,7 +382,7 @@ class Client:
 						self.state = self.READY
 						
 						if len(lines) >= 4:
-							self.movieSize = (float)(lines[3].split(' ')[1])
+							self.totalDuration = (float)(lines[3].split(' ')[1])
 						# Open RTP port.
 						self.openRtpPort()
 
@@ -455,9 +456,12 @@ class Client:
 		
 		# 2. QUAN TRỌNG NHẤT: Xóa sạch bộ đệm cũ
 		# Nếu không xóa, nó sẽ chiếu nốt 6 giây cũ rồi mới tua -> Gây cảm giác lag
-		with self.queue_frame.mutex:
-			self.queue_frame.queue.clear()
-			
+		with self.queueRender.mutex:
+			self.queueRender.queue.clear()
+		with self.queueWork.mutex:
+			self.queueWork.queue.clear()
+		self.buffer.clear()
+		self.movie_frame = int(target_time * self.FPS)
 		# 3. Gửi lệnh tua
 		self.sendRtspRequest(self.PLAY, start_time=target_time)
 		

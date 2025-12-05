@@ -11,6 +11,7 @@ class VideoStream:
 		except:
 			raise IOError
 		self.frameNum = 0
+		self.total = 0
 		self.timestamp = 0
 		# Tạo khóa để quản lý việc đọc file
 		self.lock = threading.Lock() 
@@ -30,15 +31,41 @@ class VideoStream:
 			else:
 				# End of file reached - return None to stop playback
 				return None
-			return data
+			return data	
+	# def getFrames(self):
+	# 	"""Get next frame."""
+	# 	# Dùng Lock để đảm bảo không ai tua file khi đang đọc frame này
+	# 	while self.file.seekable():
+	# 		data = self.file.read(5)
+	# 		self.timestamp += 3000
+	# 		if data: 
+	# 			framelength = int(data)
+	# 			data = self.file.seek(framelength, 1)
+	# 			self.total += 1
+	# 	return self.total
 		
+	def getTotalFrame(self):
+		self.total = 0
+		with self.lock:
+			self.file.seek(0)
+			while True:
+				try:
+					data = self.file.read(5)
+					if not data: break
+					length = int(data)
+					self.file.seek(length, 1)
+					self.total += 1
+				except: break
+			self.file.seek(0)
+		return self.total
 	def getTimestamp(self):
 		"""Get frame number."""
-		return self.timestamp
+		return self.frameNum
 	
 	def getTotalSize(self):
 		return self.fileSize
-
+	def getFrames(self):
+		return self.frameNum
 	def seek_frame(self, target_frame): 
 		"""Seek to specified frame position."""
 		with self.lock:

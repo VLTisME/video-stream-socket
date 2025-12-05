@@ -72,9 +72,10 @@ class ServerWorker:
 				self.clientInfo['session'] = randint(100000, 999999)
 				#Lấy tổng size
 				totalSize = self.clientInfo['videoStream'].getTotalSize()
-				
+				total = self.clientInfo['videoStream'].getTotalFrame()
+		
 				#Tạo extra_Header chuẩn RTSP (Range: npt=start-end)
-				extra_header = "\nMovieSize: %f" % totalSize
+				extra_header = "\nDuration: %f" % (total/self.FPS)
 				
 				# Send RTSP reply
 				self.replyRtsp(self.OK_200, seq[1], extra_header)
