@@ -1,2 +1,7 @@
-CreateHDvideo.py
-QUALITY_SWITCHING_FIX.md
+/__pycache__/
+
+*.md
+!README.md
+
+*.Mjpeg
+!movie.Mjpeg

@@ -37,11 +37,21 @@ class Client:
 	def __init__(self, master, serveraddr, serverport, rtpport, filename):
 		self.master = master
 		self.master.protocol("WM_DELETE_WINDOW", self.handler)
+
+		# Quality to filename mapping (allows picking 480p before setup)
+		self.quality_files = {
+			"480p": "movie_480p.Mjpeg",
+			"720p": "movie_720p.Mjpeg",
+			"1080p": "movie_1080p.Mjpeg"
+		}
+		# Default to 720p, but if the provided filename matches a known variant, sync the dropdown
+		self.currentQuality = next((q for q, f in self.quality_files.items() if f == filename), "720p")
+		self.fileName = self.quality_files[self.currentQuality]
+
 		self.createWidgets()
 		self.serverAddr = serveraddr
 		self.serverPort = int(serverport)
 		self.rtpPort = int(rtpport)
-		self.fileName = filename
 
 		self.buffer = {} #key: timestamp, value: {seqNum1: payload1, ...}
 		self.queueRender = Queue()
@@ -69,6 +79,13 @@ class Client:
 		self.SET_PARAMETER_STR = "SET_PARAMETER"
 		self.currentQuality = "720p"
 		self.last_rtp_timestamp = 0
+		
+		# Quality to filename mapping
+		self.quality_files = {
+			"480p": "movie_480p.Mjpeg",
+			"720p": "movie_720p.Mjpeg",
+			"1080p": "movie_1080p.Mjpeg"
+		}
 
 		self.i =0
 		
@@ -100,8 +117,8 @@ class Client:
 		self.teardown.grid(row=1, column=3, padx=2, pady=2)
 
 		self.qualityVar = StringVar(self.master)
-		self.qualityVar.set("720p") 
-		qualities = ["720p", "1080p"]
+		self.qualityVar.set(self.currentQuality)
+		qualities = ["480p", "720p", "1080p"]
 		self.qualityMenu = OptionMenu(self.master, self.qualityVar, *qualities, command=self.changeQuality)
 		self.qualityMenu.config(width=10)
 		self.qualityMenu.grid(row=1, column=4, padx=2, pady=2)		
@@ -121,9 +138,16 @@ class Client:
 		self.label.grid(row=0, column=0, columnspan=4, sticky=W+E+N+S, padx=5, pady=5)
 
 	def changeQuality(self, value):
+		# Allow pre-setup selection: just sync quality + filename, no network call
+		if self.state == self.INIT:
+			self.currentQuality = value
+			self.fileName = self.quality_files.get(self.currentQuality, self.fileName)
+			return
+
 		if self.state in [self.READY, self.PLAYING]:
 			if value == self.currentQuality: return
 			self.currentQuality = value
+			self.fileName = self.quality_files.get(self.currentQuality, self.fileName)
 			
 			# Clear all buffers to prevent mixing old/new quality frames
 			with self.queueRender.mutex:
@@ -139,6 +163,9 @@ class Client:
 	def setupMovie(self):
 		"""Setup button handler."""
 		if self.state == self.INIT:
+			# Honor current dropdown selection (enables starting directly at 480p)
+			self.currentQuality = self.qualityVar.get()
+			self.fileName = self.quality_files.get(self.currentQuality, self.fileName)
 			self.sendRtspRequest(self.SETUP)
 	
 	def exitClient(self):
