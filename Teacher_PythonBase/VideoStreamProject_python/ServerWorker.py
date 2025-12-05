@@ -1,15 +1,20 @@
 from random import randint
 import sys, traceback, threading, socket
-
+import time
+import math
 from VideoStream import VideoStream
 from RtpPacket import RtpPacket
+from RtpPacket import JpegHeader
 
+CLOCK_RATE = 900000
+FRAME_RATE = 30
 class ServerWorker:
 	SETUP = 'SETUP'
 	PLAY = 'PLAY'
 	PAUSE = 'PAUSE'
 	TEARDOWN = 'TEARDOWN'
-	
+	SEEK = 'SEEK'
+	FPS = 30
 	INIT = 0
 	READY = 1
 	PLAYING = 2
@@ -57,35 +62,67 @@ class ServerWorker:
 				
 				try:
 					self.clientInfo['videoStream'] = VideoStream(filename)
+					
 					self.state = self.READY
 				except IOError:
-					self.replyRtsp(self.FILE_NOT_FOUND_404, seq[1])
-				
+					self.replyRtsp(self.FILE_NOT_FOUND_404, seq[1], '')
+					return
 				# Generate a randomized RTSP session ID
 				self.clientInfo['session'] = randint(100000, 999999)
+				#Lấy tổng size
+				totalSize = self.clientInfo['videoStream'].getTotalSize()
+				total = self.clientInfo['videoStream'].getTotalFrame()
+		
+				#Tạo extra_Header chuẩn RTSP (Range: npt=start-end)
+				extra_header = "\nDuration: %f" % (total/self.FPS)
 				
 				# Send RTSP reply
-				self.replyRtsp(self.OK_200, seq[1])
+				self.replyRtsp(self.OK_200, seq[1], extra_header)
 				
 				# Get the RTP/UDP port from the last line
 				self.clientInfo['rtpPort'] = request[2].split(' ')[3]
-		
+			
 		# Process PLAY request 		
 		elif requestType == self.PLAY:
+			print("processing PLAY\n")
+			
+			# --- 1. XỬ LÝ TUA (SEEK) ---
+			# Đoạn này phải nằm NGOÀI vòng kiểm tra state để dù đang chạy hay đang dừng đều tua được
+			start_frame = -1
+			for line in request:
+				if "Range: npt=" in line:
+					try:
+						# Lấy số giây (VD: npt=10.5-)
+						val = line.split("=")[1].split("-")[0]
+						start_time = float(val)
+						start_frame = int(start_time * 30) # FPS = 30
+					except: pass
+			
+			if start_frame > -1:
+				print(f"Server seeking to frame: {start_frame}")
+				# Gọi hàm seek_frame của VideoStream
+				self.clientInfo['videoStream'].seek_frame(start_frame)
+			# ---------------------------
+
+			# --- 2. XỬ LÝ TRẠNG THÁI ---
 			if self.state == self.READY:
-				print("processing PLAY\n")
+				# Trường hợp 1: Đang dừng -> Bắt đầu chạy (Tạo Thread mới)
 				self.state = self.PLAYING
 				
-				# Create a new socket for RTP/UDP
-				self.clientInfo["rtpSocket"] = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+				if 'rtpSocket' not in self.clientInfo:
+					self.clientInfo["rtpSocket"] = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 				
 				self.replyRtsp(self.OK_200, seq[1])
 				
-				# Create a new thread and start sending RTP packets
 				self.clientInfo['event'] = threading.Event()
 				self.clientInfo['worker']= threading.Thread(target=self.sendRtp) 
 				self.clientInfo['worker'].start()
-		
+			
+			elif self.state == self.PLAYING:
+				# Trường hợp 2: Đang chạy mà bấm Tua -> Chỉ trả lời OK
+				# Thread cũ (sendRtp) vẫn đang chạy ngầm, nó sẽ tự động lấy frame ở vị trí mới
+				# TUYỆT ĐỐI KHÔNG tạo thread mới ở đây
+				self.replyRtsp(self.OK_200, seq[1])
 		# Process PAUSE request
 		elif requestType == self.PAUSE:
 			if self.state == self.PLAYING:
@@ -106,54 +143,75 @@ class ServerWorker:
 			
 			# Close the RTP socket
 			self.clientInfo['rtpSocket'].close()
-			
+		elif requestType == self.SEEK:
+			pass
+
 	def sendRtp(self):
 		"""Send RTP packets over UDP."""
+		timestamp = 0
 		while True:
-			self.clientInfo['event'].wait(0.05) 
-			
+			self.clientInfo['event'].wait(0.003)
 			# Stop sending if request is PAUSE or TEARDOWN
 			if self.clientInfo['event'].isSet(): 
 				break 
 				
-			data = self.clientInfo['videoStream'].nextFrame()
-			if data: 
-				frameNumber = self.clientInfo['videoStream'].frameNbr()
+			frame = self.clientInfo['videoStream'].nextFrame()
+			timestamp += CLOCK_RATE//FRAME_RATE
+			if frame:
+				PAYLOADSIZE = 1400
+				size = len(frame)
+				nFragments = math.ceil(size/PAYLOADSIZE)
 				try:
 					address = self.clientInfo['rtspSocket'][1][0]
 					port = int(self.clientInfo['rtpPort'])
-					self.clientInfo['rtpSocket'].sendto(self.makeRtp(data, frameNumber),(address,port))
+					marker = 0
+					# Sending fragments
+					for i in range(nFragments):
+						offset = i*PAYLOADSIZE
+						end = 0
+						if offset + PAYLOADSIZE >= size:
+							end = size
+							marker = 1
+						else: 
+							end = offset+PAYLOADSIZE
+						chunk = frame[offset:end]
+						packet = JpegHeader()
+						typeSpecific = 0
+						type_ = 0
+						q = 255
+						width = 0
+						height = 0
+						packet.encode(typeSpecific,offset,type_,q,width,height,chunk)
+						print("Timestamp: " +str(timestamp) + " "+str(i)+"/"+str(nFragments)+ "\n")
+						self.clientInfo['rtpSocket'].sendto(self.makeRtp(packet.getPacket(), i+1, timestamp,marker),(address,port))
 				except:
 					print("Connection Error")
-					#print('-'*60)
-					#traceback.print_exc(file=sys.stdout)
-					#print('-'*60)
-
-	def makeRtp(self, payload, frameNbr):
+			else:
+				pass
+	def makeRtp(self, payload, seqNum, timestamp,marker):
 		"""RTP-packetize the video data."""
 		version = 2
 		padding = 0
 		extension = 0
 		cc = 0
-		marker = 0
 		pt = 26 # MJPEG type
-		seqnum = frameNbr
 		ssrc = 0 
-		
+		ts = timestamp
 		rtpPacket = RtpPacket()
-		
-		rtpPacket.encode(version, padding, extension, cc, seqnum, marker, pt, ssrc, payload)
-		
+
+		rtpPacket.encode(version, padding, extension, cc, marker, pt, seqNum, ts, ssrc, payload)
 		return rtpPacket.getPacket()
 		
-	def replyRtsp(self, code, seq):
+	def replyRtsp(self, code, seq, totalTime = ''):
 		"""Send RTSP reply to the client."""
 		if code == self.OK_200:
 			#print("200 OK")
 			reply = 'RTSP/1.0 200 OK\nCSeq: ' + seq + '\nSession: ' + str(self.clientInfo['session'])
+			reply += totalTime
 			connSocket = self.clientInfo['rtspSocket'][0]
+			print(reply)
 			connSocket.send(reply.encode())
-		
+
 		# Error messages
 		elif code == self.FILE_NOT_FOUND_404:
 			print("404 NOT FOUND")
