@@ -9,7 +9,7 @@ class VideoStream:
 		except:
 			raise IOError
 		self.frameNum = 0
-		
+		self.timestamp = self.frameNum*33
 		# Tạo khóa để quản lý việc đọc file
 		self.lock = threading.Lock() 
 		
@@ -43,7 +43,7 @@ class VideoStream:
 		
 	def getTimestamp(self):
 		"""Get frame number."""
-		return self.timestamp
+		return self.frameNum
 	
 	def getTotalframe(self):
 		return self.total_frames

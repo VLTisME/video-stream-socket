@@ -10,7 +10,7 @@ class RtpPacket:
 		
 	def encode(self, version, padding, extension, cc, marker, pt, seqnum, timestamp, ssrc, payload):
 		"""Encode the RTP packet with header fields and payload."""
-		timestamp = int(time())
+		# timestamp = int(time())
 		header = bytearray(self.HEADER_SIZE)
 		#--------------
 		# TO COMPLETE
@@ -91,7 +91,7 @@ class JpegHeader:
 		return self.header + self.payload
 	def decode(self, byteStream):
 		self.header = bytearray(byteStream[:self.HEADER_SIZE])
-		self.payload = bytearray[self.HEADER_SIZE:]
+		self.payload = byteStream[self.HEADER_SIZE:]
 
 	def offset(self):
 		offset = self.header[1]<<16 | self.header[2]<<8 | self.header[3]

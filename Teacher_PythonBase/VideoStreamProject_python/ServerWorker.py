@@ -160,15 +160,15 @@ class ServerWorker:
 				PAYLOADSIZE = 1400
 				timestamp = self.clientInfo['videoStream'].getTimestamp()
 				size = len(frame)
-				nFragments = size/PAYLOADSIZE + 1
+				nFragments = int(size/PAYLOADSIZE) + 1
 				try:
 					address = self.clientInfo['rtspSocket'][1][0]
 					port = int(self.clientInfo['rtpPort'])
-					
 					# Sending fragments
 					for i in range(nFragments):
 						offset = i*PAYLOADSIZE
 						end = PAYLOADSIZE if offset + PAYLOADSIZE <= size else size
+						marker = 1 if i == nFragments - 1 else 0
 						chunk = frame[offset:end]
 						packet = JpegHeader()
 						typeSpecific = 0
@@ -177,18 +177,20 @@ class ServerWorker:
 						width = 0
 						height = 0
 						packet.encode(typeSpecific,offset,type_,q,width,height,chunk)
-						self.clientInfo['rtpSocket'].sendto(self.makeRtp(packet, i+1, timestamp),(address,port))
+						if self.clientInfo['event'].isSet(): 
+							break
+						self.clientInfo['rtpSocket'].sendto(self.makeRtp(packet, i+1, timestamp, marker),(address,port))
 						
 				except:
 					print("Connection Error")
+					break
 
-	def makeRtp(self, payload, seqNum, timestamp):
+	def makeRtp(self, payload, seqNum, timestamp, marker = 0):
 		"""RTP-packetize the video data."""
 		version = 2
 		padding = 0
 		extension = 0
 		cc = 0
-		marker = 0
 		pt = 26 # MJPEG type
 		seqnum = seqNum
 		ssrc = 0 

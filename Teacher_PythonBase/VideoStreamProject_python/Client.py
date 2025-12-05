@@ -142,9 +142,12 @@ class Client:
 			ms = 30
 			frame = self.queueRender.get_nowait()
 			self.updateMovie(frame)
+			if hasattr(self, 'currTs'):
+				current_time_sec = float(self.currTs) / 1000.0
+				self.draw_timeline(current_time_sec) 
 		except:
 			pass
-		self.master.after(ms,self.renderLoop())
+		self.master.after(ms,self.renderLoop)
 
 	def listenRtp(self):		
 		"""Listen for RTP packets."""
@@ -155,8 +158,8 @@ class Client:
 					rtpPacket = RtpPacket()
 					rtpPacket.decode(data)
 					currChunk = rtpPacket.seqNum()
-					currTs = rtpPacket.timestamp()
-					print("Current Timestamp: " +str(currTs)+": "+ str(currChunk))
+					self.currTs = rtpPacket.timestamp()
+					print("Current Timestamp: " +str(self.currTs)+": "+ str(currChunk))
 					self.queueWork.put(rtpPacket)
         
 			except:
@@ -213,7 +216,7 @@ class Client:
 			payload = fragments[seqNum].getPayload()
 			frame[offset:offset+len(payload)] = payload
 
-		self.queueRender.append(frame)
+		self.queueRender.put(frame)
 
 	def updateMovie(self, data):
 		"""Update the image file as video frame in the GUI."""
