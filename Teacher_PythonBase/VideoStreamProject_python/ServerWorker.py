@@ -10,6 +10,7 @@ class ServerWorker:
 	PLAY = 'PLAY'
 	PAUSE = 'PAUSE'
 	TEARDOWN = 'TEARDOWN'
+	SET_PARAMETER = 'SET_PARAMETER'
 	
 	INIT = 0
 	READY = 1
@@ -39,74 +40,89 @@ class ServerWorker:
 	
 	def processRtspRequest(self, data):
 		"""Process RTSP request sent from the client."""
-		# Get the request type
+        # Get the request type
 		request = data.split('\n')
 		line1 = request[0].split(' ')
 		requestType = line1[0]
-		
-		# Get the media file name
+        
+        # Get the media file name
 		filename = line1[1]
-		
-		# Get the RTSP sequence number 
+        
+        # Get the RTSP sequence number 
 		seq = request[1].split(' ')
-		
-		# Process SETUP request
+        
+        # Process SETUP request
 		if requestType == self.SETUP:
 			if self.state == self.INIT:
-				# Update state
 				print("processing SETUP\n")
-				
 				try:
 					self.clientInfo['videoStream'] = VideoStream(filename)
 					self.state = self.READY
 				except IOError:
 					self.replyRtsp(self.FILE_NOT_FOUND_404, seq[1])
-				
-				# Generate a randomized RTSP session ID
+                
 				self.clientInfo['session'] = randint(100000, 999999)
-				
-				# Send RTSP reply
 				self.replyRtsp(self.OK_200, seq[1])
-				
-				# Get the RTP/UDP port from the last line
 				self.clientInfo['rtpPort'] = request[2].split(' ')[3]
-		
-		# Process PLAY request 		
+        
+        # Process PLAY request      
 		elif requestType == self.PLAY:
 			if self.state == self.READY:
 				print("processing PLAY\n")
 				self.state = self.PLAYING
-				
-				# Create a new socket for RTP/UDP
 				self.clientInfo["rtpSocket"] = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-				
 				self.replyRtsp(self.OK_200, seq[1])
-				
-				# Create a new thread and start sending RTP packets
 				self.clientInfo['event'] = threading.Event()
 				self.clientInfo['worker']= threading.Thread(target=self.sendRtp) 
 				self.clientInfo['worker'].start()
-		
-		# Process PAUSE request
+        
+        # Process PAUSE request
 		elif requestType == self.PAUSE:
 			if self.state == self.PLAYING:
 				print("processing PAUSE\n")
 				self.state = self.READY
-				
 				self.clientInfo['event'].set()
-			
 				self.replyRtsp(self.OK_200, seq[1])
-		
-		# Process TEARDOWN request
+        
+        # Process TEARDOWN request
 		elif requestType == self.TEARDOWN:
 			print("processing TEARDOWN\n")
-
 			self.clientInfo['event'].set()
-			
 			self.replyRtsp(self.OK_200, seq[1])
-			
-			# Close the RTP socket
 			self.clientInfo['rtpSocket'].close()
+            
+		elif requestType == self.SET_PARAMETER:
+			print("processing SET_PARAMETER")
+            
+			for line in request:
+				if "Quality:" in line:
+					try:
+						params = line.split(',')
+                        # params[0] la "Quality: 1080p" -> lay "1080p"
+						qualityVal = params[0].split(':')[1].strip() 
+                        # params[1] la " time=51" -> lay "51"
+						timeVal = int(params[1].split('=')[1].strip()) 
+                        
+						print(f"Request Quality: '{qualityVal}', Time: {timeVal}")
+                        
+						newFileName = ""
+						if qualityVal == "720p":
+							newFileName = "movie.Mjpeg"
+						elif qualityVal == "1080p":
+							newFileName = "movie_1080p.Mjpeg" 
+                        
+						if newFileName != "":
+							print(f"Server switching to file: {newFileName}")
+                            # Đổi luồng video
+							self.clientInfo['videoStream'] = VideoStream(newFileName)
+							self.clientInfo['videoStream'].seekFrame(timeVal)
+							self.replyRtsp(self.OK_200, seq[1])
+						else:
+							print(f"Unknown quality value: {qualityVal}")
+                            
+					except Exception as e:
+						print(f"Error switching quality: {e}")
+                        # Nếu lỗi (ví dụ file không thấy), vẫn giữ nguyên luồng cũ
 			
 	def sendRtp(self):
 		"""Send RTP packets over UDP."""

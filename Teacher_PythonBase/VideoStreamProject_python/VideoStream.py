@@ -22,6 +22,14 @@ class VideoStream:
 		"""Get frame number."""
 		return self.frameNum
 	
-	def seekFrame(self, timestamp):
-		
+	def seekFrame(self, frameNumber):
+		"""Seek to a specific frame number."""
+		self.file.seek(0)
+		self.frameNum = 0
+		while self.frameNum < frameNumber:
+			data = self.file.read(5)
+			if not data: break
+			framelength = int(data)
+			self.file.seek(framelength, 1)
+			self.frameNum += 1
 	
