@@ -59,8 +59,8 @@ class VideoStream:
 			self.file.seek(0)
 		return self.total
 	def getTimestamp(self):
-		"""Get frame number."""
-		return self.frameNum
+		"""Get RTP timestamp (increments 30000 per frame)."""
+		return self.timestamp
 	
 	def getTotalSize(self):
 		return self.fileSize

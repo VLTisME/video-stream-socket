@@ -55,6 +55,7 @@ class Client:
 		self.teardownAcked = 0
 		self.totalDuration = 0
 		self.start_time = 0.0
+		self.pending_seek_time = None  # remember seek position while paused
 		self.connectToServer()
 
 		self.is_dragging = False
@@ -160,7 +161,9 @@ class Client:
 			self.playEvent.clear()
 
 			self.renderLoop()
-			self.sendRtspRequest(self.PLAY)
+			start_time = self.pending_seek_time if self.pending_seek_time is not None else -1.0
+			self.sendRtspRequest(self.PLAY, start_time=start_time)
+			self.pending_seek_time = None
 	
 	def renderLoop(self):
 		if self.playEvent.is_set() or self.teardownAcked == 1:
@@ -462,8 +465,10 @@ class Client:
 			self.queueWork.queue.clear()
 		self.buffer.clear()
 		self.movie_frame = int(target_time * self.FPS)
-		# 3. Gửi lệnh tua
-		self.sendRtspRequest(self.PLAY, start_time=target_time)
+		# 3. Handle seek depending on current state
+		self.pending_seek_time = target_time
+		if self.state == self.PLAYING:
+			self.sendRtspRequest(self.PLAY, start_time=target_time)
 		
 		# 4. Tắt cờ kéo chuột
 		self.is_dragging = False
