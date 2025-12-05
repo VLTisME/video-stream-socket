@@ -1,11 +1,13 @@
 from random import randint
 import sys, traceback, threading, socket
-
+import time
+import math
 from VideoStream import VideoStream
 from RtpPacket import RtpPacket
 from RtpPacket import JpegHeader
 
-CLOCK_TICK = 900000
+CLOCK_RATE = 900000
+FRAME_RATE = 30
 class ServerWorker:
 	SETUP = 'SETUP'
 	PLAY = 'PLAY'
@@ -67,14 +69,12 @@ class ServerWorker:
 					return
 				# Generate a randomized RTSP session ID
 				self.clientInfo['session'] = randint(100000, 999999)
-				#Lấy tổng frame
-				totalframe = self.clientInfo['videoStream'].getTotalframe()
-				
-				#Tính Duration
-				duration = totalframe / float(self.FPS)
-				
+				#Lấy tổng size
+				totalSize = self.clientInfo['videoStream'].getTotalSize()
+				total = self.clientInfo['videoStream'].getTotalFrame()
+		
 				#Tạo extra_Header chuẩn RTSP (Range: npt=start-end)
-				extra_header = "\nRange: npt=0-%.2f" % duration
+				extra_header = "\nDuration: %f" % (total/self.FPS)
 				
 				# Send RTSP reply
 				self.replyRtsp(self.OK_200, seq[1], extra_header)
@@ -148,27 +148,32 @@ class ServerWorker:
 
 	def sendRtp(self):
 		"""Send RTP packets over UDP."""
-		fps = 0.003
+		timestamp = 0
 		while True:
-			self.clientInfo['event'].wait(fps)
+			self.clientInfo['event'].wait(0.003)
 			# Stop sending if request is PAUSE or TEARDOWN
 			if self.clientInfo['event'].isSet(): 
 				break 
 				
 			frame = self.clientInfo['videoStream'].nextFrame()
+			timestamp += CLOCK_RATE//FRAME_RATE
 			if frame:
 				PAYLOADSIZE = 1400
-				timestamp = self.clientInfo['videoStream'].getTimestamp()
 				size = len(frame)
-				nFragments = int(size/PAYLOADSIZE) + 1
+				nFragments = math.ceil(size/PAYLOADSIZE)
 				try:
 					address = self.clientInfo['rtspSocket'][1][0]
 					port = int(self.clientInfo['rtpPort'])
+					marker = 0
 					# Sending fragments
 					for i in range(nFragments):
 						offset = i*PAYLOADSIZE
-						end = PAYLOADSIZE if offset + PAYLOADSIZE <= size else size
-						marker = 1 if i == nFragments - 1 else 0
+						end = 0
+						if offset + PAYLOADSIZE >= size:
+							end = size
+							marker = 1
+						else: 
+							end = offset+PAYLOADSIZE
 						chunk = frame[offset:end]
 						packet = JpegHeader()
 						typeSpecific = 0
@@ -177,29 +182,24 @@ class ServerWorker:
 						width = 0
 						height = 0
 						packet.encode(typeSpecific,offset,type_,q,width,height,chunk)
-						if self.clientInfo['event'].isSet(): 
-							break
-						self.clientInfo['rtpSocket'].sendto(self.makeRtp(packet, i+1, timestamp, marker),(address,port))
-						
+						print("Timestamp: " +str(timestamp) + " "+str(i)+"/"+str(nFragments)+ "\n")
+						self.clientInfo['rtpSocket'].sendto(self.makeRtp(packet.getPacket(), i+1, timestamp,marker),(address,port))
 				except:
 					print("Connection Error")
-					break
-
-	def makeRtp(self, payload, seqNum, timestamp, marker = 0):
+			else:
+				pass
+	def makeRtp(self, payload, seqNum, timestamp,marker):
 		"""RTP-packetize the video data."""
 		version = 2
 		padding = 0
 		extension = 0
 		cc = 0
 		pt = 26 # MJPEG type
-		seqnum = seqNum
 		ssrc = 0 
 		ts = timestamp
-		# maybe SOS here
 		rtpPacket = RtpPacket()
-		
-		rtpPacket.encode(version, padding, extension, cc, marker, pt, seqnum, ts, ssrc, payload)
-		
+
+		rtpPacket.encode(version, padding, extension, cc, marker, pt, seqNum, ts, ssrc, payload)
 		return rtpPacket.getPacket()
 		
 	def replyRtsp(self, code, seq, totalTime = ''):
@@ -207,9 +207,9 @@ class ServerWorker:
 		if code == self.OK_200:
 			#print("200 OK")
 			reply = 'RTSP/1.0 200 OK\nCSeq: ' + seq + '\nSession: ' + str(self.clientInfo['session'])
-			if totalTime != '':
-				reply += '\n' + str(totalTime)
+			reply += totalTime
 			connSocket = self.clientInfo['rtspSocket'][0]
+			print(reply)
 			connSocket.send(reply.encode())
 
 		# Error messages
