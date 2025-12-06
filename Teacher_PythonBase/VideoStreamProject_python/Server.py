@@ -10,8 +10,10 @@ class Server:
 		except:
 			print("[Usage: Server.py Server_port]\n")
 		rtspSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+		rtspSocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 		rtspSocket.bind(('0.0.0.0', SERVER_PORT))
-		rtspSocket.listen(5)        
+		rtspSocket.listen(5)
+		print(f"Server listening on port {SERVER_PORT} (all interfaces)")        
 
 		# Receive client info (address,port) through RTSP/TCP session
 		while True:

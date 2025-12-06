@@ -5,3 +5,5 @@
 
 *.Mjpeg
 !movie.Mjpeg
+
+*.log
