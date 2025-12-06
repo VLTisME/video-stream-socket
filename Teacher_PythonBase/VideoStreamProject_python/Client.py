@@ -65,7 +65,7 @@ class Client:
 		self.teardownAcked = 0
 		self.totalDuration = 0
 		self.start_time = 0.0
-		self.pending_seek_time = None  # remember seek position while paused
+		self.pending_seek_time = None 
 		self.connectToServer()
 
 		self.is_dragging = False
@@ -474,7 +474,6 @@ class Client:
 	def on_timeline_release(self, event):
 		if self.totalDuration == 0: return
 		
-		# 1. Tính toán vị trí mới
 		click_x = event.x
 		if click_x < 0: click_x = 0
 		if click_x > self.timeline_w: click_x = self.timeline_w
@@ -483,35 +482,44 @@ class Client:
 		target_time = ratio * self.totalDuration
 		
 		print(f"Seeking to: {target_time}")
+		bufferTime = self.queueRender.qsize() / self.FPS
+		# with self.queueRender.mutex:
+		# 	self.queueRender.queue.clear()
 		
-		# 2. QUAN TRỌNG NHẤT: Xóa sạch bộ đệm cũ
-		# Nếu không xóa, nó sẽ chiếu nốt 6 giây cũ rồi mới tua -> Gây cảm giác lag
+
+		current_time = self.movie_frame / 30
+
+		if target_time <= bufferTime + current_time and target_time >= current_time:
+			num_skip_frame = int((target_time - current_time) * 30) 
+			for x in range(num_skip_frame):
+				try:
+					self.queueRender.get_nowait()
+				except:
+					break
+			self.movie_frame += num_skip_frame
+			self.is_dragging = False
+			return	
+	
 		with self.queueRender.mutex:
 			self.queueRender.queue.clear()
 		with self.queueWork.mutex:
 			self.queueWork.queue.clear()
 		self.buffer.clear()
 		self.movie_frame = int(target_time * self.FPS)
-		# 3. Handle seek depending on current state
 		self.pending_seek_time = target_time
 		if self.state == self.PLAYING:
 			self.sendRtspRequest(self.PLAY, start_time=target_time)
-		
 		# 4. Tắt cờ kéo chuột
 		self.is_dragging = False
 
 	def draw_timeline(self, current_time):
 		if self.is_dragging: return
 		if self.totalDuration > 0:
-			# 1. VẼ THANH XÁM (BUFFER) - Phải vẽ trước hoặc vẽ dài hơn
-			# Buffer Bar = Current Time + Buffered Time
-			
-			# Tính thời gian đang nằm trong Queue
 			buffer_seconds = self.queueRender.qsize() / float(self.FPS)
 			
 			# Điểm cuối của thanh xám
 			buffer_end_time = current_time + buffer_seconds
-			
+
 			buff_ratio = buffer_end_time / self.totalDuration
 			buff_width = buff_ratio * self.timeline_w
 			
