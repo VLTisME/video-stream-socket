@@ -14,6 +14,7 @@ class ServerWorker:
 	PAUSE = 'PAUSE'
 	TEARDOWN = 'TEARDOWN'
 	SEEK = 'SEEK'
+	SET_PARAMETER = 'SET_PARAMETER'
 	FPS = 30
 	INIT = 0
 	READY = 1
@@ -86,8 +87,6 @@ class ServerWorker:
 		elif requestType == self.PLAY:
 			print("processing PLAY\n")
 			
-			# --- 1. XỬ LÝ TUA (SEEK) ---
-			# Đoạn này phải nằm NGOÀI vòng kiểm tra state để dù đang chạy hay đang dừng đều tua được
 			start_frame = -1
 			for line in request:
 				if "Range: npt=" in line:
@@ -119,9 +118,6 @@ class ServerWorker:
 				self.clientInfo['worker'].start()
 			
 			elif self.state == self.PLAYING:
-				# Trường hợp 2: Đang chạy mà bấm Tua -> Chỉ trả lời OK
-				# Thread cũ (sendRtp) vẫn đang chạy ngầm, nó sẽ tự động lấy frame ở vị trí mới
-				# TUYỆT ĐỐI KHÔNG tạo thread mới ở đây
 				self.replyRtsp(self.OK_200, seq[1])
 		# Process PAUSE request
 		elif requestType == self.PAUSE:
@@ -146,17 +142,60 @@ class ServerWorker:
 		elif requestType == self.SEEK:
 			pass
 
+		# Process SET_PARAMETER request (quality switching)
+		elif requestType == self.SET_PARAMETER:
+			print("processing SET_PARAMETER\n")
+			
+			qualityVal = ""
+			client_timestamp = 0
+			
+			# Parse request to get quality and timestamp
+			for line in request:
+				if "Quality:" in line:
+					try:
+						parts = line.split(',')
+						qualityVal = parts[0].split(':')[1].strip()
+						client_timestamp = int(parts[1].split('=')[1].strip())
+					except:
+						pass
+			
+			# 2. Chọn file
+			newFileName = ""
+			if qualityVal == "480p": newFileName = "movie_480p.Mjpeg"
+			elif qualityVal == "720p": newFileName = "movie_720p.Mjpeg"
+			elif qualityVal == "1080p": newFileName = "movie_1080p.Mjpeg"
+			
+			if newFileName != "":
+				try:
+					# Calculate target frame from timestamp
+					target_frame = client_timestamp // 30000
+					
+					# Create new stream and seek to position
+					newStream = VideoStream(newFileName)
+					newStream.seek_frame(target_frame)
+					
+					# Hot-swap the stream
+					self.clientInfo['videoStream'] = newStream
+					
+					self.replyRtsp(self.OK_200, seq[1])
+				except Exception as e:
+					print(f"Error switching: {e}")
+					self.replyRtsp(self.CON_ERR_500, seq[1])
+			else:
+				self.replyRtsp(self.OK_200, seq[1])
+
 	def sendRtp(self):
 		"""Send RTP packets over UDP."""
-		timestamp = 0
 		while True:
 			self.clientInfo['event'].wait(0.003)
 			# Stop sending if request is PAUSE or TEARDOWN
 			if self.clientInfo['event'].isSet(): 
 				break 
 				
-			frame = self.clientInfo['videoStream'].nextFrame()
-			timestamp += CLOCK_RATE//FRAME_RATE
+			stream = self.clientInfo['videoStream']
+			frame = stream.nextFrame()
+			timestamp = stream.getTimestamp()
+			
 			if frame:
 				PAYLOADSIZE = 1400
 				size = len(frame)
@@ -182,7 +221,6 @@ class ServerWorker:
 						width = 0
 						height = 0
 						packet.encode(typeSpecific,offset,type_,q,width,height,chunk)
-						print("Timestamp: " +str(timestamp) + " "+str(i)+"/"+str(nFragments)+ "\n")
 						self.clientInfo['rtpSocket'].sendto(self.makeRtp(packet.getPacket(), i+1, timestamp,marker),(address,port))
 				except:
 					print("Connection Error")

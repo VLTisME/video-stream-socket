@@ -1,4 +1,5 @@
 from tkinter import *
+import tkinter
 import tkinter.messagebox as tkMessageBox
 import tkinter.messagebox
 from PIL import Image, ImageTk
@@ -28,6 +29,7 @@ class Client:
 	PAUSE = 2
 	TEARDOWN = 3
 	SEEK = 4
+	SET_PARAMETER = 5
  
 	RTSP_VER = "RTSP/1.0"
 	TRANSPORT = "RTP/UDP"
@@ -36,15 +38,26 @@ class Client:
 	def __init__(self, master, serveraddr, serverport, rtpport, filename):
 		self.master = master
 		self.master.protocol("WM_DELETE_WINDOW", self.handler)
+
+		# Quality to filename mapping (allows picking 480p before setup)
+		self.quality_files = {
+			"480p": "movie_480p.Mjpeg",
+			"720p": "movie_720p.Mjpeg",
+			"1080p": "movie_1080p.Mjpeg"
+		}
+		# Default to 720p, but if the provided filename matches a known variant, sync the dropdown
+		self.currentQuality = next((q for q, f in self.quality_files.items() if f == filename), "720p")
+		self.fileName = self.quality_files[self.currentQuality]
+
 		self.createWidgets()
 		self.serverAddr = serveraddr
 		self.serverPort = int(serverport)
 		self.rtpPort = int(rtpport)
-		self.fileName = filename
 
 		self.buffer = {} #key: timestamp, value: {seqNum1: payload1, ...}
 		self.queueRender = Queue()
 		self.queueWork = Queue()
+		self.current_render_timestamp = 0  # Track the timestamp of the frame being rendered
 
 		self.movie_frame = 0
 		self.rtspSeq = 0
@@ -53,6 +66,7 @@ class Client:
 		self.teardownAcked = 0
 		self.totalDuration = 0
 		self.start_time = 0.0
+		self.pending_seek_time = None 
 		self.connectToServer()
 
 		self.is_dragging = False
@@ -63,6 +77,19 @@ class Client:
 		self.TEARDOWN_STR = "TEARDOWN"
 		self.SETUP_STR = "SETUP"
 		self.SEEK_STR = "SEEK"
+		self.SET_PARAMETER_STR = "SET_PARAMETER"
+		self.currentQuality = "720p"
+		self.last_rtp_timestamp = 0
+		
+		# Quality to filename mapping
+		self.quality_files = {
+			"480p": "movie_480p.Mjpeg",
+			"720p": "movie_720p.Mjpeg",
+			"1080p": "movie_1080p.Mjpeg"
+		}
+		
+		# Cache for resize parameters to avoid recalculating each frame
+		self.resize_cache = {}  # key: (img_width, img_height), value: (new_width, new_height, offset_x, offset_y)
 
 		self.i =0
 		
@@ -92,7 +119,14 @@ class Client:
 		self.teardown["text"] = "Teardown"
 		self.teardown["command"] =  self.exitClient
 		self.teardown.grid(row=1, column=3, padx=2, pady=2)
-		
+
+		self.qualityVar = StringVar(self.master)
+		self.qualityVar.set(self.currentQuality)
+		qualities = ["480p", "720p", "1080p"]
+		self.qualityMenu = OptionMenu(self.master, self.qualityVar, *qualities, command=self.changeQuality)
+		self.qualityMenu.config(width=10)
+		self.qualityMenu.grid(row=1, column=4, padx=2, pady=2)		
+  
 		#create Slider
 		self.timeline_w = 400  # Chiều dài timeline (pixel)
 		self.timeline_h = 20   # Chiều cao timeline
@@ -103,13 +137,53 @@ class Client:
 		self.canvas.bind("<Button-1>", self.on_timeline_click)
 		self.canvas.bind("<B1-Motion>", self.on_timeline_drag)
 		self.canvas.bind("<ButtonRelease-1>", self.on_timeline_release)
-		# Create a label to display the movie
-		self.label = Label(self.master, height=19)
-		self.label.grid(row=0, column=0, columnspan=4, sticky=W+E+N+S, padx=5, pady=5)
+		
+		# Create a frame to contain the video with fixed size
+		self.video_frame = tkinter.Frame(self.master, bg="black")
+		self.video_frame.grid(row=0, column=0, columnspan=4, sticky=W+E+N+S, padx=5, pady=5)
+		self.video_frame.grid_propagate(False)  # Prevent frame from resizing
+		self.video_frame.config(width=640, height=480)
+		
+		# Create a label to display the movie inside the fixed frame
+		self.label = tkinter.Label(self.video_frame, bg="black")
+		self.label.pack(fill=BOTH, expand=True)
+		
+		# Fixed video dimensions for display
+		self.video_width = 640
+		self.video_height = 480
+
+	def changeQuality(self, value):
+		# Allow pre-setup selection: just sync quality + filename, no network call
+		if self.state == self.INIT:
+			self.currentQuality = value
+			self.fileName = self.quality_files.get(self.currentQuality, self.fileName)
+			return
+
+		if self.state in [self.READY, self.PLAYING]:
+			if value == self.currentQuality: return
+			self.currentQuality = value
+			self.fileName = self.quality_files.get(self.currentQuality, self.fileName)
+			
+			# Clear resize cache when quality changes (new resolution expected)
+			self.resize_cache.clear()
+			
+			# Clear all buffers to prevent mixing old/new quality frames
+			with self.queueRender.mutex:
+				self.queueRender.queue.clear()
+			with self.queueWork.mutex:
+				self.queueWork.queue.clear()
+			self.buffer.clear()
+			
+			# Use current rendering timestamp to maintain playback position
+			switch_timestamp = self.current_render_timestamp if self.current_render_timestamp > 0 else self.last_rtp_timestamp
+			self.sendRtspRequest(self.SET_PARAMETER, timestamp=switch_timestamp)
 	
 	def setupMovie(self):
 		"""Setup button handler."""
 		if self.state == self.INIT:
+			# Honor current dropdown selection (enables starting directly at 480p)
+			self.currentQuality = self.qualityVar.get()
+			self.fileName = self.quality_files.get(self.currentQuality, self.fileName)
 			self.sendRtspRequest(self.SETUP)
 	
 	def exitClient(self):
@@ -132,21 +206,26 @@ class Client:
 			self.playEvent.clear()
 
 			self.renderLoop()
-			self.sendRtspRequest(self.PLAY)
+			start_time = self.pending_seek_time if self.pending_seek_time is not None else -1.0
+			self.sendRtspRequest(self.PLAY, start_time=start_time)
+			self.pending_seek_time = None
 	
 	def renderLoop(self):
 		if self.playEvent.is_set() or self.teardownAcked == 1:
 			return
 		try:
 			ms = 30
-			frame = self.queueRender.get_nowait()
+			timestamp, frame = self.queueRender.get_nowait()
+			self.current_render_timestamp = timestamp
 			self.movie_frame += 1
+			print(self.movie_frame)
 			currentTime = self.movie_frame / self.FPS
 			self.draw_timeline(currentTime)
 			self.updateMovie(frame)
-
-		except:
+		except queue.Empty:
 			pass
+		except Exception as e:
+			print(f"Error rendering frame: {e}")
 		self.master.after(ms,self.renderLoop)
 
 	def listenRtp(self):		
@@ -157,9 +236,7 @@ class Client:
 				if data:
 					rtpPacket = RtpPacket()
 					rtpPacket.decode(data)
-					currChunk = rtpPacket.seqNum()
-					currTs = rtpPacket.timestamp()
-					#print("Current Timestamp: " +str(currTs)+": "+ str(currChunk))
+					self.last_rtp_timestamp = rtpPacket.timestamp()
 					self.queueWork.put(rtpPacket)
         
 			except:
@@ -223,14 +300,21 @@ class Client:
 			payload = fragments[seqNum].getPayload()
 			frame[offset:offset+len(payload)] = payload
 		
-		self.queueRender.put(frame)
+		# Store frame with its timestamp
+		self.queueRender.put((timestamp, bytes(frame)))
 
 	def updateMovie(self, data):
-		"""Update the image file as video frame in the GUI."""
-		image = io.BytesIO(data)
-		photo = ImageTk.PhotoImage(Image.open(image))
-		self.label.configure(image = photo, height=288) 
-		self.label.image = photo
+		"""Update the image file as video frame in the GUI - FAST VERSION."""
+		try:
+			# Since server now outputs fixed 640x480 at different qualities,
+			# we can display directly without resize
+			image = io.BytesIO(data)
+			img = Image.open(image)
+			photo = ImageTk.PhotoImage(img)
+			self.label.configure(image=photo)
+			self.label.image = photo
+		except Exception as e:
+			print(f"Error updating movie frame: {e}")
 
 	def connectToServer(self):
 		"""Connect to the Server. Start a new RTSP/TCP session."""
@@ -240,7 +324,7 @@ class Client:
 		except:
 			tkMessageBox.showwarning('Connection Failed', 'Connection to \'%s\' failed.' %self.serverAddr)
 	
-	def sendRtspRequest(self, requestCode, start_time=-1.0):
+	def sendRtspRequest(self, requestCode, start_time=-1.0, timestamp=0):
 		"""Send RTSP request to the server."""	
 		#-------------
 		# TO COMPLETE
@@ -299,6 +383,17 @@ class Client:
 			request += "\nSession: %d" % self.sessionId
 
 			self.requestSent = self.SEEK
+		# [THÊM] Đoạn xử lý SET_PARAMETER
+		elif requestCode == self.SET_PARAMETER:
+			self.rtspSeq += 1
+			# Lưu ý: Chỗ này sửa lại format string cho đúng
+			request = "%s rtsp://%s/%s %s" % (self.SET_PARAMETER_STR, self.serverAddr, self.fileName, self.RTSP_VER)
+			request += "\nCSeq: %d" % self.rtspSeq
+			request += "\nSession: %d" % self.sessionId
+			# Dòng quan trọng gửi timestamp
+			request += "\nQuality: %s, timestamp=%d" % (self.currentQuality, int(timestamp))
+			
+			self.requestSent = self.SET_PARAMETER
 		else:
 			return
 		
@@ -404,7 +499,6 @@ class Client:
 	def on_timeline_release(self, event):
 		if self.totalDuration == 0: return
 		
-		# 1. Tính toán vị trí mới
 		click_x = event.x
 		if click_x < 0: click_x = 0
 		if click_x > self.timeline_w: click_x = self.timeline_w
@@ -413,33 +507,44 @@ class Client:
 		target_time = ratio * self.totalDuration
 		
 		print(f"Seeking to: {target_time}")
+		bufferTime = self.queueRender.qsize() / self.FPS
+		# with self.queueRender.mutex:
+		# 	self.queueRender.queue.clear()
 		
-		# 2. QUAN TRỌNG NHẤT: Xóa sạch bộ đệm cũ
-		# Nếu không xóa, nó sẽ chiếu nốt 6 giây cũ rồi mới tua -> Gây cảm giác lag
+
+		current_time = self.movie_frame / 30
+
+		if target_time <= bufferTime + current_time and target_time >= current_time:
+			num_skip_frame = int((target_time - current_time) * 30) 
+			for x in range(num_skip_frame):
+				try:
+					self.queueRender.get_nowait()
+				except:
+					break
+			self.movie_frame += num_skip_frame
+			self.is_dragging = False
+			return	
+	
 		with self.queueRender.mutex:
 			self.queueRender.queue.clear()
 		with self.queueWork.mutex:
 			self.queueWork.queue.clear()
 		self.buffer.clear()
 		self.movie_frame = int(target_time * self.FPS)
-		# 3. Gửi lệnh tua
-		self.sendRtspRequest(self.PLAY, start_time=target_time)
-		
+		self.pending_seek_time = target_time
+		if self.state == self.PLAYING:
+			self.sendRtspRequest(self.PLAY, start_time=target_time)
 		# 4. Tắt cờ kéo chuột
 		self.is_dragging = False
 
 	def draw_timeline(self, current_time):
 		if self.is_dragging: return
 		if self.totalDuration > 0:
-			# 1. VẼ THANH XÁM (BUFFER) - Phải vẽ trước hoặc vẽ dài hơn
-			# Buffer Bar = Current Time + Buffered Time
-			
-			# Tính thời gian đang nằm trong Queue
 			buffer_seconds = self.queueRender.qsize() / float(self.FPS)
 			
 			# Điểm cuối của thanh xám
 			buffer_end_time = current_time + buffer_seconds
-			
+
 			buff_ratio = buffer_end_time / self.totalDuration
 			buff_width = buff_ratio * self.timeline_w
 			
