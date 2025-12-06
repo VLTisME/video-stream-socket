@@ -87,8 +87,6 @@ class ServerWorker:
 		elif requestType == self.PLAY:
 			print("processing PLAY\n")
 			
-			# --- 1. XỬ LÝ TUA (SEEK) ---
-			# Đoạn này phải nằm NGOÀI vòng kiểm tra state để dù đang chạy hay đang dừng đều tua được
 			start_frame = -1
 			for line in request:
 				if "Range: npt=" in line:
@@ -120,9 +118,6 @@ class ServerWorker:
 				self.clientInfo['worker'].start()
 			
 			elif self.state == self.PLAYING:
-				# Trường hợp 2: Đang chạy mà bấm Tua -> Chỉ trả lời OK
-				# Thread cũ (sendRtp) vẫn đang chạy ngầm, nó sẽ tự động lấy frame ở vị trí mới
-				# TUYỆT ĐỐI KHÔNG tạo thread mới ở đây
 				self.replyRtsp(self.OK_200, seq[1])
 		# Process PAUSE request
 		elif requestType == self.PAUSE:
@@ -229,7 +224,8 @@ class ServerWorker:
 						self.clientInfo['rtpSocket'].sendto(self.makeRtp(packet.getPacket(), i+1, timestamp,marker),(address,port))
 				except:
 					print("Connection Error")
-
+			else:
+				pass
 	def makeRtp(self, payload, seqNum, timestamp,marker):
 		"""RTP-packetize the video data."""
 		version = 2

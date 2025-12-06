@@ -200,6 +200,7 @@ class Client:
 			timestamp, frame = self.queueRender.get_nowait()
 			self.current_render_timestamp = timestamp
 			self.movie_frame += 1
+			print(self.movie_frame)
 			currentTime = self.movie_frame / self.FPS
 			self.draw_timeline(currentTime)
 			self.updateMovie(frame)
