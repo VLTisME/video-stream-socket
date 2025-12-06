@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """
-GenerateVariantsSafe.py
+GenerateVariantsSafe.py - OPTIMIZED VERSION
 
 Reads the original MJPEG file (`movie.Mjpeg`) and writes three quality variants:
-  - movie_480p.Mjpeg (640x480, JPEG quality 75)
-  - movie_720p.Mjpeg (1280x720, JPEG quality 85)
-  - movie_1080p.Mjpeg (1920x1080, JPEG quality 90)
+  - movie_480p.Mjpeg (640x480, JPEG quality 50)  - Low quality, fast
+  - movie_720p.Mjpeg (640x480, JPEG quality 75)  - Medium quality
+  - movie_1080p.Mjpeg (640x480, JPEG quality 95) - High quality, detailed
 
-Frames are processed sequentially and written with a 5-byte ASCII length header
-followed by JPEG data. All output files are written in one pass to avoid
-partial writes. Progress is printed every 50 frames.
+ALL output files are 640x480 resolution (same display size)
+but different JPEG compression levels for actual quality difference.
+This allows:
+- Fixed window display in client
+- Real quality differences visible (not just zoom)
+- Fast playback (no client-side resize needed)
 """
 import io
 import os
@@ -18,31 +21,38 @@ from typing import Tuple
 from PIL import Image
 
 QUALITY_PRESETS = {
-    # start qualities; will auto-step down if a frame exceeds 5-digit header limit
-    "480p": (640, 480, 75),
-    "720p": (1280, 720, 80),
-    "1080p": (1920, 1080, 40),  # aggressive to keep frames < 100k
+    # All output to 640x480, but EXTREME quality difference for maximum visibility
+    # (quality, optimize_flag)
+    "480p": (640, 480, 8, False),    # HEAVILY COMPRESSED, pixelated but slightly recognizable
+    "720p": (640, 480, 15, False),   # Low quality, noticeable compression
+    "1080p": (640, 480, 100, True),  # MAXIMUM quality, ultra sharp and crystal clear
 }
 
-def process_frame(img_data: bytes, target: Tuple[int, int, int]) -> bytes:
-    """Resize and encode; if frame exceeds 5-digit header, lower quality until it fits."""
-    width, height, jpeg_q_start = target
+def process_frame(img_data: bytes, target: Tuple[int, int, int, bool]) -> bytes:
+    """Resize to fixed 640x480 and encode with specified quality."""
+    width, height, jpeg_quality, optimize = target
     img_io = io.BytesIO(img_data)
     img = Image.open(img_io)
-    img = img.resize((width, height), Image.Resampling.LANCZOS)
+    
+    # Resize to fixed size (fast BILINEAR is good enough here)
+    img = img.resize((width, height), Image.Resampling.BILINEAR)
 
-    q = jpeg_q_start
-    while q >= 20:  # floor to avoid extreme degradation
-        out = io.BytesIO()
-        img.save(out, format="JPEG", quality=q, optimize=False)
-        data = out.getvalue()
-        if len(data) <= 99999:  # fits 5-byte ASCII length
-            return data
+    # Use specified quality
+    out = io.BytesIO()
+    img.save(out, format="JPEG", quality=jpeg_quality, optimize=optimize)
+    data = out.getvalue()
+    
+    # If frame is too large, reduce quality
+    q = jpeg_quality
+    while len(data) > 99999 and q > 20:
         q -= 5
-    # If still too large, return last attempt (may be >99999, caller will skip)
+        out = io.BytesIO()
+        img.save(out, format="JPEG", quality=q, optimize=optimize)
+        data = out.getvalue()
+    
     return data
 
-def generate_variant(input_file: str, output_file: str, preset: Tuple[int, int, int]):
+def generate_variant(input_file: str, output_file: str, preset: Tuple[int, int, int, bool]):
     total_frames = 0
     skipped_too_large = 0
     written_bytes = 0

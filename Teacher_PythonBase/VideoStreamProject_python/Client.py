@@ -1,4 +1,5 @@
 from tkinter import *
+import tkinter
 import tkinter.messagebox as tkMessageBox
 import tkinter.messagebox
 from PIL import Image, ImageTk
@@ -86,6 +87,9 @@ class Client:
 			"720p": "movie_720p.Mjpeg",
 			"1080p": "movie_1080p.Mjpeg"
 		}
+		
+		# Cache for resize parameters to avoid recalculating each frame
+		self.resize_cache = {}  # key: (img_width, img_height), value: (new_width, new_height, offset_x, offset_y)
 
 		self.i =0
 		
@@ -133,9 +137,20 @@ class Client:
 		self.canvas.bind("<Button-1>", self.on_timeline_click)
 		self.canvas.bind("<B1-Motion>", self.on_timeline_drag)
 		self.canvas.bind("<ButtonRelease-1>", self.on_timeline_release)
-		# Create a label to display the movie
-		self.label = Label(self.master, height=19)
-		self.label.grid(row=0, column=0, columnspan=4, sticky=W+E+N+S, padx=5, pady=5)
+		
+		# Create a frame to contain the video with fixed size
+		self.video_frame = tkinter.Frame(self.master, bg="black")
+		self.video_frame.grid(row=0, column=0, columnspan=4, sticky=W+E+N+S, padx=5, pady=5)
+		self.video_frame.grid_propagate(False)  # Prevent frame from resizing
+		self.video_frame.config(width=640, height=480)
+		
+		# Create a label to display the movie inside the fixed frame
+		self.label = tkinter.Label(self.video_frame, bg="black")
+		self.label.pack(fill=BOTH, expand=True)
+		
+		# Fixed video dimensions for display
+		self.video_width = 640
+		self.video_height = 480
 
 	def changeQuality(self, value):
 		# Allow pre-setup selection: just sync quality + filename, no network call
@@ -148,6 +163,9 @@ class Client:
 			if value == self.currentQuality: return
 			self.currentQuality = value
 			self.fileName = self.quality_files.get(self.currentQuality, self.fileName)
+			
+			# Clear resize cache when quality changes (new resolution expected)
+			self.resize_cache.clear()
 			
 			# Clear all buffers to prevent mixing old/new quality frames
 			with self.queueRender.mutex:
@@ -285,11 +303,17 @@ class Client:
 		self.queueRender.put((timestamp, bytes(frame)))
 
 	def updateMovie(self, data):
-		"""Update the image file as video frame in the GUI."""
-		image = io.BytesIO(data)
-		photo = ImageTk.PhotoImage(Image.open(image))
-		self.label.configure(image = photo, height=288) 
-		self.label.image = photo
+		"""Update the image file as video frame in the GUI - FAST VERSION."""
+		try:
+			# Since server now outputs fixed 640x480 at different qualities,
+			# we can display directly without resize
+			image = io.BytesIO(data)
+			img = Image.open(image)
+			photo = ImageTk.PhotoImage(img)
+			self.label.configure(image=photo)
+			self.label.image = photo
+		except Exception as e:
+			print(f"Error updating movie frame: {e}")
 
 	def connectToServer(self):
 		"""Connect to the Server. Start a new RTSP/TCP session."""
